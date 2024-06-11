@@ -12,6 +12,7 @@ from brevitas.core.quant import RescalingIntQuant, ClampedBinaryQuant
 # TODO: remove all additional printing statements after making sure the code is working
 
 # Customized brevitas activation class that added post and pre transformation to the data along with the definintion of a custom forward function 
+# Utility functions
 def get_int_state_space(bits: int, signed: bool, narrow_range: bool):
     start = int(0 if not signed else (-2**(bits-1) + int(narrow_range))) # calculate the minimum value in the range
     end = int(start + 2**(bits) - int(narrow_range)) # calculate the maximum of the range
@@ -19,7 +20,7 @@ def get_int_state_space(bits: int, signed: bool, narrow_range: bool):
     return state_space
 
 
-# TODO: Put this inside an abstract base class 
+# TODO: Put this inside an abstract base class
 def get_float_state_space(bits: int, scale_factor: float, signed: bool, narrow_range: bool, quant_type: QuantType):
     if quant_type == QuantType.INT:
         bin_state_space = get_int_state_space(bits, signed, narrow_range)
@@ -43,7 +44,7 @@ class QuantBrevitasActivation(nn.Module):
         quant_type = self.get_quant_type()
         scale_factor, bits = self.get_scale_factor_bits()
         if quant_type == QuantType.INT:
-            tensor_quant = self.brevitas_module.act_quant_proxy.fused_activation_quant_proxy.tensor_quant
+            tensor_quant = self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant
             narrow_range = tensor_quant.int_quant.narrow_range
             signed = tensor_quant.int_quant.signed
             offset = 2**(bits-1) -int(narrow_range) if signed else 0
@@ -62,7 +63,7 @@ class QuantBrevitasActivation(nn.Module):
         self.is_bin_output = False
 
     def get_quant_type(self):
-        brevitas_module_type = type(self.brevitas_module.act_quant_proxy.fused_activation_quant_proxy.tensor_quant)
+        brevitas_module_type = type(self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant)
         if brevitas_module_type == RescalingIntQuant:
             return QuantType.INT
         elif brevitas_module_type == ClampedBinaryQuant:
@@ -71,14 +72,22 @@ class QuantBrevitasActivation(nn.Module):
             raise Exception("Unknown quantization type for tensor_quant: {}".format(brevitas_module_type))
 
     # TODO: Allow for different bitwidths / scales per output
-    def get_scale_factor_bits(self):
-        # TODO: put guards in this based on quantization type
-        quant_proxy = self.brevitas_module.act_quant_proxy
-        current_status = quant_proxy.training
-        quant_proxy.eval()
-        _, scale_factor, bits = quant_proxy(quant_proxy.zero_hw_sentinel)
-        quant_proxy.training = current_status
-        return scale_factor, bits
+
+    def get_scale_factor_bits(self): 
+        ''' 
+        This function is not the orignial function that has been used in the LogicNets repo. Instead, it has been modified to allow for capturing
+        the accurate variables and return the expected values. 
+
+        refer to the original LogicNets repository for the original function 
+        '''
+        if hasattr(self.brevitas_module, 'quant_act_scale') and hasattr(self.brevitas_module, 'quant_act_bit_width'):
+            scale_factor = self.brevitas_module.quant_act_scale()
+            bits = self.brevitas_module.quant_act_bit_width()
+
+            return scale_factor, bits
+        else: 
+            raise AttributeError(f"'{type(self.brevitas_module).__name__}' object does not have the requaired quantization methods")
+                                 
 
     # Return a floating point version of the state space, this return values
     # that PyTorch would see at the output of this layer during training.
@@ -87,7 +96,7 @@ class QuantBrevitasActivation(nn.Module):
         quant_type = self.get_quant_type()
         scale_factor, bits = self.get_scale_factor_bits()
         if quant_type == QuantType.INT:
-            tensor_quant = self.brevitas_module.act_quant_proxy.fused_activation_quant_proxy.tensor_quant
+            tensor_quant = self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant
             narrow_range = tensor_quant.int_quant.narrow_range
             signed = tensor_quant.int_quant.signed
             state_space = get_float_state_space(bits, scale_factor, signed, narrow_range, quant_type)
@@ -97,13 +106,12 @@ class QuantBrevitasActivation(nn.Module):
             raise Exception("Unknown quantization type: {}".format(quant_type))
         return self.apply_post_transforms(state_space)
 
-    # Return the underlying binary representation of the values returned by
-    # 'get_state_space'
+    # Return the underlying binary representation of the values returned by 'get_state_space'
     def get_bin_state_space(self):
         quant_type = self.get_quant_type()
         _, bits = self.get_scale_factor_bits()
         if quant_type == QuantType.INT:
-            tensor_quant = self.brevitas_module.act_quant_proxy.fused_activation_quant_proxy.tensor_quant
+            tensor_quant = self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant
             narrow_range = tensor_quant.int_quant.narrow_range
             signed = tensor_quant.int_quant.signed
             state_space = get_int_state_space(bits, signed, narrow_range)
@@ -116,17 +124,13 @@ class QuantBrevitasActivation(nn.Module):
     def apply_pre_transforms(self, x):
         if self.pre_transforms is not None:
             for i in range(len(self.pre_transforms)):
-                print('shape before normalization:', x.shape)
                 x= self.pre_transforms[i](x)
-                print('shape after normalization:', x.shape)
             return x
 
     def apply_post_transforms(self, x):
-        if self.post_transforms is not None:  
+        if self.post_transforms is not None:
             for i in range(len(self.post_transforms)):
-                print('shape before pooling:', x.shape)
                 x = self.post_transforms[i](x)
-                print('shape after pooling:', x.shape)
             return x
 
     def forward(self, x):
