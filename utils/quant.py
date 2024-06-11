@@ -14,8 +14,8 @@ from brevitas.core.quant import RescalingIntQuant, ClampedBinaryQuant
 # Customized brevitas activation class that added post and pre transformation to the data along with the definintion of a custom forward function 
 # Utility functions
 def get_int_state_space(bits: int, signed: bool, narrow_range: bool):
-    start = int(0 if not signed else (-2**(bits-1) + int(narrow_range))) # calculate the minimum value in the range
-    end = int(start + 2**(bits) - int(narrow_range)) # calculate the maximum of the range
+    start = int(0 if not signed else (-2**(bits-1) + int(narrow_range)))
+    end = int(start + 2**(bits) - int(narrow_range))
     state_space = torch.as_tensor(range(start, end))
     return state_space
 
@@ -29,8 +29,9 @@ def get_float_state_space(bits: int, scale_factor: float, signed: bool, narrow_r
     state_space = scale_factor * bin_state_space
     return state_space
 
-class QuantBrevitasActivation(nn.Module):
 
+# quantization class (brevitas customized) 
+class QuantBrevitasActivation(nn.Module):
     def __init__(self, brevitas_module, pre_transforms: list = [], post_transforms: list = []):
         super(QuantBrevitasActivation, self).__init__()
         self.brevitas_module = brevitas_module
@@ -38,8 +39,6 @@ class QuantBrevitasActivation(nn.Module):
         self.post_transforms = nn.ModuleList(post_transforms)
         self.is_bin_output = False
 
-    # TODO: Move to a base class
-    # TODO: Move the string templates to verilog.py
     def get_bin_str(self, x: int):
         quant_type = self.get_quant_type()
         scale_factor, bits = self.get_scale_factor_bits()
@@ -54,13 +53,15 @@ class QuantBrevitasActivation(nn.Module):
         else:
             raise Exception("Unknown quantization type: {}".format(quant_type))
 
-    # TODO: Move to a base class
+
+        # TODO: Move to a base class
     def bin_output(self):
         self.is_bin_output = False
 
     # TODO: Move to a base class
     def float_output(self):
         self.is_bin_output = False
+    
 
     def get_quant_type(self):
         brevitas_module_type = type(self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant)
@@ -70,6 +71,8 @@ class QuantBrevitasActivation(nn.Module):
             return QuantType.BINARY
         else:
             raise Exception("Unknown quantization type for tensor_quant: {}".format(brevitas_module_type))
+        
+
 
     # TODO: Allow for different bitwidths / scales per output
 
@@ -89,19 +92,18 @@ class QuantBrevitasActivation(nn.Module):
             raise AttributeError(f"'{type(self.brevitas_module).__name__}' object does not have the requaired quantization methods")
                                  
 
-    # Return a floating point version of the state space, this return values
-    # that PyTorch would see at the output of this layer during training.
-    # TODO: Merge this function with 'get_bin_state_space' and remove duplicated code.
     def get_state_space(self):
         quant_type = self.get_quant_type()
+        print(quant_type)
         scale_factor, bits = self.get_scale_factor_bits()
+        print(bits, scale_factor)
         if quant_type == QuantType.INT:
             tensor_quant = self.brevitas_module.act_quant.fused_activation_quant_proxy.tensor_quant
             narrow_range = tensor_quant.int_quant.narrow_range
             signed = tensor_quant.int_quant.signed
             state_space = get_float_state_space(bits, scale_factor, signed, narrow_range, quant_type)
         elif quant_type == QuantType.BINARY:
-            state_space = scale_factor*torch.tensor([-1, 1])
+            state_space = scale_factor * torch.tensor([-1, 1])
         else:
             raise Exception("Unknown quantization type: {}".format(quant_type))
         return self.apply_post_transforms(state_space)
@@ -138,13 +140,16 @@ class QuantBrevitasActivation(nn.Module):
             s, _ = self.get_scale_factor_bits()
             x = self.apply_pre_transforms(x)
             x = self.brevitas_module(x)
-            x = torch.round(x/s).type(torch.int64)
+            x = torch.round(x / s).type(torch.int64)
         else:
             x = self.apply_pre_transforms(x)
             x = self.brevitas_module(x)
             x = self.apply_post_transforms(x)
         return x
-    
+
+
+
+
 class ScalarScaleBias(nn.Module):
     def __init__(self, scale=True, scale_init=1.0, bias=True, bias_init=0.0) -> None:
         super(ScalarScaleBias, self).__init__()
